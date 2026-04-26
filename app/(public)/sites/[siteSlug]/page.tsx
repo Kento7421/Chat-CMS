@@ -1,47 +1,50 @@
 import { notFound } from "next/navigation";
-import { SectionCard } from "@/components/layout/section-card";
-import { demoSnapshots } from "@/lib/mock-data";
+import { SiteBrowserPreview } from "@/components/site-renderer/site-browser-preview";
+import { resolvePublicSiteCandidate } from "@/lib/public-site";
+import { normalizeSiteSnapshot } from "@/lib/site-snapshot";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 type PublicSitePageProps = {
-  params: {
+  params: Promise<{
     siteSlug: string;
-  };
+  }>;
 };
 
-export default function PublicSitePage({ params }: PublicSitePageProps) {
-  const snapshot = demoSnapshots.find((item) => item.slug === params.siteSlug);
+export default async function PublicSitePage({ params }: PublicSitePageProps) {
+  const routeParams = await params;
+  const supabase = createSupabaseAdminClient();
+  const { data: sites, error } = await supabase
+    .from("sites")
+    .select("id, name, slug, template_id, current_version_id, status")
+    .eq("slug", routeParams.siteSlug)
+    .eq("status", "published")
+    .limit(2);
 
-  if (!snapshot) {
+  if (error) {
     notFound();
   }
 
-  return (
-    <div className="space-y-6">
-      <section className="rounded-[28px] border border-white/60 bg-white/80 p-6 shadow-panel backdrop-blur sm:p-8">
-        <p className="text-sm font-medium uppercase tracking-[0.22em] text-sea">
-          Public Site Preview
-        </p>
-        <h1 className="mt-3 text-4xl font-semibold tracking-tight text-ink">
-          {snapshot.name}
-        </h1>
-        <p className="mt-4 max-w-3xl text-sm leading-7 text-slate-700 sm:text-base">
-          現時点では `site_versions.snapshot_json` を公開面の正本にする設計だけを
-          前提にしたプレースホルダです。次段階でテンプレートレンダラに置き換えます。
-        </p>
-      </section>
+  const site = resolvePublicSiteCandidate(sites ?? []);
 
-      <section className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
-        <SectionCard
-          title="トップメッセージ"
-          description={snapshot.hero.copy}
-          footer={`営業時間: ${snapshot.contact.businessHours}`}
-        />
-        <SectionCard
-          title="問い合わせ先"
-          description={`${snapshot.contact.phone} / ${snapshot.contact.email}`}
-          footer={snapshot.templateName}
-        />
-      </section>
-    </div>
+  if (!site) {
+    notFound();
+  }
+
+  let snapshotJson = null;
+
+  if (site.current_version_id) {
+    const { data: currentVersion } = await supabase
+      .from("site_versions")
+      .select("snapshot_json")
+      .eq("id", site.current_version_id)
+      .maybeSingle();
+
+    snapshotJson = currentVersion?.snapshot_json ?? null;
+  }
+
+  const snapshot = normalizeSiteSnapshot(snapshotJson, site);
+
+  return (
+    <SiteBrowserPreview snapshot={snapshot} addressLabel={`/sites/${site.slug}`} />
   );
 }

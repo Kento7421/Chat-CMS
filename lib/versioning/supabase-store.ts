@@ -1,7 +1,12 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import type { VersioningStore } from "@/lib/versioning/store";
-import type { NewSiteVersionInput, NewVersionChangeInput } from "@/lib/versioning/types";
+import type {
+  CommitVersionPublicationInput,
+  NewSiteVersionInput,
+  NewVersionChangeInput
+} from "@/lib/versioning/types";
+import type { Json } from "@/types/database";
 
 function ensureData<T>(data: T | null, error: { message: string } | null, fallbackMessage: string) {
   if (error) {
@@ -30,20 +35,6 @@ export class SupabaseVersioningStore implements VersioningStore {
     }
 
     return data;
-  }
-
-  async updateChangeSet(
-    changeSetId: string,
-    patch: Partial<Database["public"]["Tables"]["change_sets"]["Row"]>
-  ) {
-    const { data, error } = await this.supabase
-      .from("change_sets")
-      .update(patch)
-      .eq("id", changeSetId)
-      .select("*")
-      .single();
-
-    return ensureData(data, error, "Updated change set was not returned.");
   }
 
   async getCurrentSiteVersion(siteId: string) {
@@ -86,6 +77,26 @@ export class SupabaseVersioningStore implements VersioningStore {
     }
 
     return data;
+  }
+
+  async commitVersionPublication(input: CommitVersionPublicationInput) {
+    const { data, error } = await this.supabase.rpc("commit_site_publication_transaction", {
+      p_site_id: input.siteId,
+      p_expected_current_version_id: input.expectedCurrentVersionId,
+      p_version_payload: input.version as unknown as Json,
+      p_diff_entries: input.versionChanges as unknown as Json,
+      p_change_set_id: input.changeSetTransition?.id ?? null,
+      p_expected_change_set_status: input.changeSetTransition?.expectedStatus ?? null,
+      p_change_set_patch: (input.changeSetTransition?.patch ?? null) as Json | null,
+      p_news_post_payload: (input.newsPost ?? null) as Json | null,
+      p_audit_log_payload: (input.auditLog ?? null) as Json | null
+    });
+
+    return {
+      version: ensureData(data, error, "Committed site version was not returned."),
+      newsPost: null,
+      auditLog: null
+    };
   }
 
   async insertSiteVersion(input: NewSiteVersionInput) {

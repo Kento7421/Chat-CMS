@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { buildPendingChangePreview } from "@/lib/chat/preview";
 import { interpretChatRequestHeuristically } from "@/lib/chat/heuristic";
 import {
   applySuggestionToSnapshot,
   buildEditableChatTargets,
   normalizeInterpretationTargets
 } from "@/lib/chat/targets";
+import { buildRenderablePages } from "@/lib/site-renderer";
 import { getFallbackEditableFieldDefinitions } from "@/lib/templates/editable-fields";
 import type { SiteSnapshot } from "@/types/domain";
 
@@ -81,9 +83,9 @@ function createSnapshot(): SiteSnapshot {
   };
 }
 
-function createEditableTargets() {
+function createEditableTargets(snapshot = createSnapshot()) {
   return buildEditableChatTargets(
-    createSnapshot(),
+    snapshot,
     getFallbackEditableFieldDefinitions("simple-corporate", "simple-corporate-v1")
   );
 }
@@ -91,7 +93,7 @@ function createEditableTargets() {
 describe("applySuggestionToSnapshot", () => {
   it("updates a page section field in the snapshot", () => {
     const snapshot = createSnapshot();
-    const editableTargets = createEditableTargets();
+    const editableTargets = createEditableTargets(snapshot);
 
     const result = applySuggestionToSnapshot(
       snapshot,
@@ -118,7 +120,7 @@ describe("applySuggestionToSnapshot", () => {
 
   it("rejects targets outside the editable field definitions", () => {
     const snapshot = createSnapshot();
-    const editableTargets = createEditableTargets().filter(
+    const editableTargets = createEditableTargets(snapshot).filter(
       (target) => target.fieldId !== "contact.contact-info.phone"
     );
 
@@ -203,5 +205,67 @@ describe("interpretChatRequestHeuristically", () => {
 
     expect(result.flowAction).toBe("ask_followup");
     expect(result.followupQuestion).toBeTruthy();
+  });
+});
+
+describe("buildPendingChangePreview", () => {
+  it("builds section-based before/after preview for text updates", () => {
+    const currentSnapshot = createSnapshot();
+    const proposedSnapshot = applySuggestionToSnapshot(
+      currentSnapshot,
+      {
+        key: "option-1",
+        title: "トップ見出し更新",
+        summary: "トップ見出しを変更します。",
+        proposedValue: "もっと相談しやすい会社へ",
+        reasoning: "親しみやすい見出しです。",
+        target: {
+          fieldId: "home.hero.heading",
+          fieldLabel: "見出し",
+          page: "home",
+          section: "hero",
+          field: "heading"
+        }
+      },
+      createEditableTargets(currentSnapshot)
+    );
+
+    const preview = buildPendingChangePreview(currentSnapshot, proposedSnapshot);
+
+    expect(preview.pages).toHaveLength(1);
+    expect(preview.pages[0]?.pageKey).toBe("home");
+    expect(preview.pages[0]?.sections[0]?.before.heading).toBe("地域に寄り添うサポート");
+    expect(preview.pages[0]?.sections[0]?.after.heading).toBe("もっと相談しやすい会社へ");
+  });
+
+  it("keeps multi-field contact preview stable", () => {
+    const currentSnapshot = createSnapshot();
+    const proposedSnapshot: SiteSnapshot = {
+      ...currentSnapshot,
+      contact: {
+        phone: "03-1234-5678",
+        email: "support@example.com",
+        businessHours: "平日 10:00-17:00"
+      }
+    };
+
+    const preview = buildPendingChangePreview(currentSnapshot, proposedSnapshot);
+
+    expect(preview.pages[0]?.pageKey).toBe("contact");
+    expect(preview.pages[0]?.sections[0]?.changedFields).toContain("contact");
+    expect(preview.pages[0]?.sections[0]?.after.contactLines).toContain("TEL 03-1234-5678");
+    expect(preview.pages[0]?.sections[0]?.after.contactLines).toContain(
+      "MAIL support@example.com"
+    );
+  });
+});
+
+describe("buildRenderablePages", () => {
+  it("creates renderable sections that match public and preview needs", () => {
+    const pages = buildRenderablePages(createSnapshot());
+
+    expect(pages.map((page) => page.key)).toEqual(["home", "about", "contact", "news"]);
+    expect(pages[2]?.sections[0]?.state.contactLines).toContain("TEL 03-0000-0000");
+    expect(pages[0]?.sections[0]?.state.heading).toBe("地域に寄り添うサポート");
   });
 });

@@ -5,9 +5,9 @@ import {
   assertAppUserCanAccessSite,
   requireApiAppUser
 } from "@/lib/auth/server";
+import { getSiteAssetById } from "@/lib/assets/service";
 import { createNewsInputSchema } from "@/lib/news/schemas";
 import { createNewsPost } from "@/lib/news/service";
-import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 export async function POST(request: Request) {
   try {
@@ -25,16 +25,7 @@ export async function POST(request: Request) {
     const site = await assertAppUserCanAccessSite(appUser, parsedInput.data.siteId);
 
     if (parsedInput.data.imageAssetId) {
-      const supabase = createSupabaseAdminClient();
-      const { data: asset, error: assetError } = await supabase
-        .from("assets")
-        .select("id,site_id")
-        .eq("id", parsedInput.data.imageAssetId)
-        .maybeSingle();
-
-      if (assetError) {
-        throw new Error(assetError.message);
-      }
+      const asset = await getSiteAssetById(site.id, parsedInput.data.imageAssetId);
 
       if (!asset || asset.site_id !== site.id) {
         return NextResponse.json(

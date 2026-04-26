@@ -1,66 +1,51 @@
 # Chat CMS
 
-中小企業向けのセルフ操作型チャットCMSを構築するための Next.js モノリポジトリです。  
-要件の正本は [docs/requirements.md](./docs/requirements.md) を参照してください。
+中小企業向けのセルフ操作型チャット CMS の MVP です。  
+要件の正本は [docs/requirements.md](/C:/Users/kento/Downloads/Chat-CMS/docs/requirements.md) を参照してください。
 
-## この初期構成で整えたもの
+## 現在のMVP範囲
 
-- `Next.js App Router + TypeScript` の開発土台
-- `Tailwind CSS` の導入
-- `Supabase` 接続ユーティリティの雛形
-- `zod` による環境変数バリデーション基盤
-- `ESLint / Prettier` の基本設定
-- 顧客向け・運営向け・公開サイト向けのルート分離
+- 顧客向けダッシュボードと管理導線の土台
+- Supabase Auth 前提の認証と ownership check
+- `site_versions` を中心にした版管理とロールバック
+- チャット更新フロー
+- お知らせ投稿と画像アップロード
+- 公開サイト描画
+- アクセス状況の最小表示
+- GA4 接続確認と site ごとの analytics 設定
+- 主要テーブルの read RLS
 
-## ディレクトリ構成
+## まず見るドキュメント
 
-```text
-app/          App Router のルート
-components/   再利用コンポーネント
-docs/         要件・設計メモ
-lib/          環境変数・ユーティリティ・外部接続
-prompts/      AIプロンプト定義の置き場
-supabase/     今後のマイグレーションやRLS設計の置き場
-types/        ドメイン型・DB型
-```
+- セットアップ手順: [docs/setup.md](/C:/Users/kento/Downloads/Chat-CMS/docs/setup.md)
+- リリース前チェック: [docs/release-checklist.md](/C:/Users/kento/Downloads/Chat-CMS/docs/release-checklist.md)
+- Supabase 補足: [supabase/README.md](/C:/Users/kento/Downloads/Chat-CMS/supabase/README.md)
 
-## ルーティング方針
-
-- `/` : 開発用トップページ
-- `/dashboard` : 顧客向け管理画面の入口
-- `/admin` : 運営向け管理画面の入口
-- `/sites/[siteSlug]` : 公開サイトの表示想定
-
-App Router の route group を使って、URL は保ちながら責務を分けています。
-
-## セットアップ
+## 開発コマンド
 
 ```bash
 npm install
-cp .env.example .env.local
 npm run dev
+npm run typecheck
+npm run lint
+npm run test
 ```
 
 ## 環境変数
 
-最低限、以下を設定してください。
+`.env.example` に必要な項目をまとめています。  
+`NEXT_PUBLIC_` 付きは client でも参照される公開変数、それ以外は server-only 前提です。
 
-- `NEXT_PUBLIC_SUPABASE_URL`
-- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-- `SUPABASE_SERVICE_ROLE_KEY`
-- `OPENAI_API_KEY`
+主な区分:
 
-`lib/env.ts` で `zod` バリデーションを通す前提です。
+- App: アプリ名、ローカル URL
+- Supabase public: URL、anon key、公開バケット名
+- Supabase server: service role key、サーバー側バケット名
+- Claude / Anthropic: チャット解釈用。未設定時は fallback 解釈あり
+- GA4: analytics 実データ連携用。未設定でも fallback 表示は継続
 
-## 今後の実装ガイド
+## 補足
 
-1. `supabase/` に DB マイグレーションと RLS 設計を追加する
-2. `types/database.ts` を実 DB スキーマに合わせて更新する
-3. `prompts/` にチャット解釈用のマスタープロンプトを追加する
-4. `app/(customer)` 配下から顧客向け画面を段階的に実装する
-5. `app/(admin)` 配下で運営管理画面を実装する
-
-## 開発メモ
-
-- 今回は土台構成のみで、認証・DB マイグレーション・実画面機能は未実装です。
-- Supabase / OpenAI は差し替えやすいように接続点だけを分離しています。
+- DB migration は `supabase/migrations/` にあります
+- RLS の smoke check query は `supabase/policies/rls_smoke_checks.sql` にあります
+- 本番デプロイ手順そのものはまだ含めていません

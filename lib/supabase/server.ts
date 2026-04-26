@@ -30,5 +30,5 @@ export async function createSupabaseServerClient() {
         }
       }
     }
-  });
+  }) as ReturnType<typeof createServerClient<Database>>;
 }

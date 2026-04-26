@@ -42,11 +42,9 @@ export async function POST(request: Request) {
       );
     }
 
-    const site = await assertAppUserCanAccessSite(appUser, parsedInput.data.siteId);
+    await assertAppUserCanAccessSite(appUser, parsedInput.data.siteId);
     const result = await uploadAsset({
-      clientId: site.client_id,
       siteId: parsedInput.data.siteId,
-      userId: appUser.id,
       altText: parsedInput.data.altText ?? null,
       width: parsedInput.data.width ?? null,
       height: parsedInput.data.height ?? null,

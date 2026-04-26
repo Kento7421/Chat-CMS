@@ -74,6 +74,20 @@ export interface PublicSiteSnapshot {
   contact: ContactInfo;
 }
 
+export interface SiteSectionSnapshot {
+  id: string;
+  heading: string;
+  body: string;
+  imageAssetId?: string | null;
+  imageAlt?: string | null;
+}
+
+export interface SitePageSnapshot {
+  key: SitePageKey;
+  title: string;
+  sections: SiteSectionSnapshot[];
+}
+
 export interface SiteSnapshot {
   schemaVersion: string;
   templateVersion: string;
@@ -86,15 +100,7 @@ export interface SiteSnapshot {
   }>;
   theme: SiteThemeConfig;
   contact: ContactInfo;
-  pages: Array<{
-    key: SitePageKey;
-    title: string;
-    sections: Array<{
-      id: string;
-      heading: string;
-      body: string;
-    }>;
-  }>;
+  pages: SitePageSnapshot[];
   news: NewsSnapshotItem[];
   assets: AssetReference[];
   assetIds: string[];

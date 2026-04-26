@@ -8,14 +8,6 @@ export type LoginActionState = {
   error: string | null;
 };
 
-const initialLoginState: LoginActionState = {
-  error: null
-};
-
-export function getInitialLoginState() {
-  return initialLoginState;
-}
-
 async function loadAppUserByAuthUserId(authUserId: string) {
   const admin = createSupabaseAdminClient();
   const { data, error } = await admin
@@ -38,15 +30,13 @@ export async function customerLoginAction(
   const email = String(formData.get("email") ?? "");
   const password = String(formData.get("password") ?? "");
   const supabase = await createSupabaseServerClient();
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
   if (error) {
     return { error: "メールアドレスまたはパスワードが正しくありません。" };
   }
 
-  const {
-    data: { user }
-  } = await supabase.auth.getUser();
+  const user = data.user;
 
   if (!user) {
     return { error: "ログイン情報の取得に失敗しました。" };
@@ -69,15 +59,13 @@ export async function adminLoginAction(
   const email = String(formData.get("email") ?? "");
   const password = String(formData.get("password") ?? "");
   const supabase = await createSupabaseServerClient();
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
   if (error) {
     return { error: "メールアドレスまたはパスワードが正しくありません。" };
   }
 
-  const {
-    data: { user }
-  } = await supabase.auth.getUser();
+  const user = data.user;
 
   if (!user) {
     return { error: "ログイン情報の取得に失敗しました。" };

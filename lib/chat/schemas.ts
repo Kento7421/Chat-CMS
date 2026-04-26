@@ -5,6 +5,9 @@ import type {
   AiInterpretationResult,
   ChangePreviewItem,
   PendingChangeSetView,
+  PendingNewsComposeState,
+  SuggestedNewsPostDraft,
+  SuggestedAssetPayload,
   SuggestionOption,
   SuggestionSetPayload,
   SupportedTargetField
@@ -25,7 +28,8 @@ const supportedTargetFieldSchema: z.ZodType<SupportedTargetField> = z.enum([
   "body",
   "phone",
   "email",
-  "businessHours"
+  "businessHours",
+  "imageAssetId"
 ]);
 
 const jsonValueSchema: z.ZodType<Json> = z.lazy(() =>
@@ -42,16 +46,17 @@ const jsonValueSchema: z.ZodType<Json> = z.lazy(() =>
 export const chatInterpretInputSchema = z.object({
   siteId: z.string().uuid(),
   sessionId: z.string().uuid().optional(),
+  assetId: z.string().uuid().optional(),
   message: z
     .string()
     .trim()
-    .min(1, "依頼内容を入力してください。")
-    .max(1000, "依頼内容は1000文字以内で入力してください。")
+    .min(1, "メッセージを入力してください。")
+    .max(1000, "メッセージは1000文字以内で入力してください。")
 });
 
 export const chatSelectSuggestionInputSchema = z.object({
   suggestionSetId: z.string().uuid(),
-  suggestionKey: z.string().trim().min(1, "選択した候補を指定してください。")
+  suggestionKey: z.string().trim().min(1, "選択する候補を指定してください。")
 });
 
 export const chatConfirmInputSchema = z.object({
@@ -66,13 +71,44 @@ export const chatTargetReferenceSchema = z.object({
   field: supportedTargetFieldSchema.nullable()
 });
 
+export const suggestedAssetPayloadSchema: z.ZodType<SuggestedAssetPayload> = z.object({
+  id: z.string().uuid(),
+  label: z.string().trim().min(1),
+  url: z.string().url().nullable(),
+  altText: z.string().trim().nullable()
+});
+
+export const suggestedNewsPostDraftSchema: z.ZodType<SuggestedNewsPostDraft> = z.object({
+  kind: z.literal("news_post"),
+  id: z.string().uuid().optional(),
+  title: z.string().trim().min(1).max(120),
+  body: z.string().trim().min(1).max(10000),
+  imageAssetId: z.string().uuid().nullable().optional(),
+  imageUrl: z.string().url().nullable().optional(),
+  imageAltText: z.string().trim().nullable().optional(),
+  publishedAt: z.string().datetime().optional()
+});
+
+export const pendingNewsComposeStateSchema: z.ZodType<PendingNewsComposeState> = z.object({
+  kind: z.literal("news_post_draft"),
+  title: z.string().trim().nullable(),
+  body: z.string().trim().nullable(),
+  imageRequested: z.boolean(),
+  imageAssetId: z.string().uuid().nullable(),
+  imageUrl: z.string().url().nullable(),
+  imageAltText: z.string().trim().nullable(),
+  missingFields: z.array(z.enum(["title", "body", "image"]))
+});
+
 export const suggestionOptionSchema: z.ZodType<SuggestionOption> = z.object({
   key: z.string().trim().min(1),
   title: z.string().trim().min(1),
   summary: z.string().trim().min(1),
   proposedValue: z.string().trim().min(1),
   reasoning: z.string().trim().min(1),
-  target: chatTargetReferenceSchema
+  target: chatTargetReferenceSchema,
+  proposedAsset: suggestedAssetPayloadSchema.nullable().optional(),
+  contentDraft: suggestedNewsPostDraftSchema.nullable().optional()
 });
 
 export const suggestionSetPayloadSchema: z.ZodType<SuggestionSetPayload> = z.object({
@@ -80,7 +116,13 @@ export const suggestionSetPayloadSchema: z.ZodType<SuggestionSetPayload> = z.obj
 });
 
 export const aiInterpretationIntentSchema: z.ZodType<AiInterpretationIntent> = z.object({
-  action_type: z.enum(["text_update", "clarify_request", "reject_request"]),
+  action_type: z.enum([
+    "text_update",
+    "asset_update",
+    "content_create",
+    "clarify_request",
+    "reject_request"
+  ]),
   intent_category: intentCategorySchema,
   confidence: z.number().min(0).max(1),
   target_page: sitePageKeySchema.nullable(),
@@ -117,7 +159,13 @@ export const chatAiResponseJsonSchema = {
         properties: {
           action_type: {
             type: "string",
-            enum: ["text_update", "clarify_request", "reject_request"]
+            enum: [
+              "text_update",
+              "asset_update",
+              "content_create",
+              "clarify_request",
+              "reject_request"
+            ]
           },
           intent_category: {
             type: "string",
@@ -141,7 +189,7 @@ export const chatAiResponseJsonSchema = {
           },
           target_field: {
             type: ["string", "null"],
-            enum: ["heading", "body", "phone", "email", "businessHours", null]
+            enum: ["heading", "body", "phone", "email", "businessHours", "imageAssetId", null]
           },
           needs_confirmation: {
             type: "boolean"
@@ -191,6 +239,12 @@ export const chatAiResponseJsonSchema = {
               type: "object",
               additionalProperties: false,
               properties: {
+                fieldId: {
+                  type: ["string", "null"]
+                },
+                fieldLabel: {
+                  type: ["string", "null"]
+                },
                 page: {
                   type: ["string", "null"],
                   enum: ["home", "about", "services", "contact", "news", null]
@@ -200,13 +254,66 @@ export const chatAiResponseJsonSchema = {
                 },
                 field: {
                   type: ["string", "null"],
-                  enum: ["heading", "body", "phone", "email", "businessHours", null]
+                  enum: ["heading", "body", "phone", "email", "businessHours", "imageAssetId", null]
                 }
               },
-              required: ["page", "section", "field"]
+              required: ["fieldId", "fieldLabel", "page", "section", "field"]
+            },
+            proposedAsset: {
+              anyOf: [
+                { type: "null" },
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    id: { type: "string" },
+                    label: { type: "string" },
+                    url: { type: ["string", "null"] },
+                    altText: { type: ["string", "null"] }
+                  },
+                  required: ["id", "label", "url", "altText"]
+                }
+              ]
+            },
+            contentDraft: {
+              anyOf: [
+                { type: "null" },
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    kind: { type: "string", enum: ["news_post"] },
+                    id: { type: "string" },
+                    title: { type: "string" },
+                    body: { type: "string" },
+                    imageAssetId: { type: ["string", "null"] },
+                    imageUrl: { type: ["string", "null"] },
+                    imageAltText: { type: ["string", "null"] },
+                    publishedAt: { type: "string" }
+                  },
+                  required: [
+                    "kind",
+                    "title",
+                    "body",
+                    "imageAssetId",
+                    "imageUrl",
+                    "imageAltText",
+                    "publishedAt"
+                  ]
+                }
+              ]
             }
           },
-          required: ["key", "title", "summary", "proposedValue", "reasoning", "target"]
+          required: [
+            "key",
+            "title",
+            "summary",
+            "proposedValue",
+            "reasoning",
+            "target",
+            "proposedAsset",
+            "contentDraft"
+          ]
         }
       }
     },
@@ -219,6 +326,7 @@ export const chatChangeSetPayloadSchema = z.object({
   proposedSnapshotJson: snapshotJsonSchema,
   selectedSuggestionKey: z.string().trim().min(1).optional(),
   suggestionSetId: z.string().uuid().optional(),
+  pendingNewsPost: suggestedNewsPostDraftSchema.optional(),
   previewDiff: z
     .array(
       z.object({
@@ -251,6 +359,63 @@ export const pendingChangeSetViewSchema: z.ZodType<PendingChangeSetView> = z.obj
   summary: z.string().nullable(),
   basedOnVersionId: z.string().uuid().nullable(),
   previewDiff: z.array(changePreviewItemSchema),
+  preview: z.object({
+    pages: z.array(
+      z.object({
+        pageKey: sitePageKeySchema,
+        pageTitle: z.string().trim().min(1),
+        sections: z.array(
+          z.object({
+            sectionId: z.string().trim().min(1),
+            sectionLabel: z.string().trim().min(1),
+            changedFields: z.array(z.string().trim().min(1)),
+            before: z.object({
+              heading: z.string(),
+              body: z.string(),
+              contactLines: z.array(z.string()),
+              image: z
+                .object({
+                  assetId: z.string().uuid().nullable(),
+                  src: z.string().nullable(),
+                  alt: z.string()
+                })
+                .nullable(),
+              newsItems: z.array(
+                z.object({
+                  id: z.string().uuid(),
+                  title: z.string(),
+                  body: z.string(),
+                  publishedAt: z.string(),
+                  imageAssetId: z.string().uuid().nullable().optional()
+                })
+              )
+            }),
+            after: z.object({
+              heading: z.string(),
+              body: z.string(),
+              contactLines: z.array(z.string()),
+              image: z
+                .object({
+                  assetId: z.string().uuid().nullable(),
+                  src: z.string().nullable(),
+                  alt: z.string()
+                })
+                .nullable(),
+              newsItems: z.array(
+                z.object({
+                  id: z.string().uuid(),
+                  title: z.string(),
+                  body: z.string(),
+                  publishedAt: z.string(),
+                  imageAssetId: z.string().uuid().nullable().optional()
+                })
+              )
+            })
+          })
+        )
+      })
+    )
+  }),
   proposedSnapshotJson: snapshotJsonSchema as unknown as z.ZodType<SiteSnapshot>
 });
 

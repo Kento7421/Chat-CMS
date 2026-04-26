@@ -116,6 +116,8 @@ export interface Database {
         name: string;
         status: "draft" | "published" | "archived";
         current_version_id: string | null;
+        analytics_provider: "fallback" | "ga4";
+        ga4_property_id: string | null;
         created_at: string;
         updated_at: string;
       }>;
@@ -177,7 +179,60 @@ export interface Database {
       }>;
     };
     Views: Record<string, never>;
-    Functions: Record<string, never>;
+    Functions: {
+      commit_site_publication_transaction: {
+        Args: {
+          p_site_id: string;
+          p_expected_current_version_id: string | null;
+          p_version_payload: Json;
+          p_diff_entries: Json;
+          p_change_set_id: string | null;
+          p_expected_change_set_status:
+            | Database["public"]["Tables"]["change_sets"]["Row"]["status"]
+            | null;
+          p_change_set_patch: Json | null;
+          p_news_post_payload: Json | null;
+          p_audit_log_payload: Json | null;
+        };
+        Returns: Database["public"]["Tables"]["site_versions"]["Row"];
+      };
+      update_site_analytics_settings: {
+        Args: {
+          p_site_id: string;
+          p_provider: string;
+          p_ga4_property_id?: string | null;
+        };
+        Returns: Database["public"]["Tables"]["sites"]["Row"];
+      };
+      create_asset_record: {
+        Args: {
+          p_site_id: string;
+          p_storage_path: string;
+          p_original_filename: string;
+          p_mime_type: string;
+          p_byte_size: number;
+          p_width?: number | null;
+          p_height?: number | null;
+          p_alt_text?: string | null;
+          p_asset_id?: string | null;
+        };
+        Returns: Database["public"]["Tables"]["assets"]["Row"];
+      };
+      create_news_post_record: {
+        Args: {
+          p_site_id: string;
+          p_title: string;
+          p_body: string;
+          p_image_asset_id?: string | null;
+          p_status?:
+            | Database["public"]["Tables"]["news_posts"]["Row"]["status"]
+            | null;
+          p_published_at?: string | null;
+          p_news_post_id?: string | null;
+        };
+        Returns: Database["public"]["Tables"]["news_posts"]["Row"];
+      };
+    };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;
   };

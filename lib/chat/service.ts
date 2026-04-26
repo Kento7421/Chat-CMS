@@ -2,10 +2,26 @@ import {
   assertAppUserCanAccessSite,
   listAccessibleSitesForAppUser
 } from "@/lib/auth/server";
-import { chatChangeSetPayloadSchema, suggestionSetPayloadSchema } from "@/lib/chat/schemas";
-import { generateChatInterpretation } from "@/lib/chat/openai";
+import { getSiteAssetById, listSiteAssets, toPublicAssetOption } from "@/lib/assets/service";
+import {
+  aiInterpretationSchema,
+  chatChangeSetPayloadSchema,
+  pendingNewsComposeStateSchema,
+  suggestionSetPayloadSchema
+} from "@/lib/chat/schemas";
+import { generateChatInterpretation } from "@/lib/chat/anthropic";
+import {
+  buildPendingNewsFollowupQuestion,
+  createPendingNewsComposeStateFromMessage,
+  isLikelyIntentSwitchFromNewsDraft,
+  mergePendingNewsComposeState,
+  toSuggestedNewsPostDraft
+} from "@/lib/chat/news-draft";
+import { buildPendingChangePreview } from "@/lib/chat/preview";
 import { applySuggestionToSnapshot, buildEditableChatTargets } from "@/lib/chat/targets";
-import { normalizeSiteSnapshot } from "@/lib/site-snapshot";
+import { assetRowToSnapshotReference, normalizeSiteSnapshot } from "@/lib/site-snapshot";
+import { buildNewsSnapshotItem } from "@/lib/news/service";
+import { upsertNewsPostInSnapshot, upsertSnapshotAsset } from "@/lib/site-snapshot";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { loadTemplateEditableFieldDefinitions } from "@/lib/templates/editable-fields";
 import {
@@ -18,10 +34,12 @@ import {
 import type { AppUser, AccessibleSite } from "@/lib/auth/types";
 import type {
   ChangePreviewItem,
+  ChatAssetOption,
   ChatMessageRow,
   ChatMessageView,
   ChatWorkspaceState,
   PendingChangeSetView,
+  SuggestionOption,
   SuggestionSetView
 } from "@/lib/chat/types";
 import type { SiteSnapshot } from "@/types/domain";
@@ -41,6 +59,7 @@ type ResolveChatSessionInput = {
 type InterpretChatInput = {
   siteId: string;
   sessionId?: string;
+  assetId?: string;
   message: string;
 };
 
@@ -128,6 +147,187 @@ async function getCurrentSiteSnapshot(site: SiteDetails) {
 async function getEditableTargetsForSite(site: SiteDetails, snapshot: SiteSnapshot) {
   const editableFieldDefinitions = await loadTemplateEditableFieldDefinitions(site.template_id);
   return buildEditableChatTargets(snapshot, editableFieldDefinitions);
+}
+
+async function getAvailableAssetsForSite(siteId: string) {
+  try {
+    return await listSiteAssets(siteId, 24);
+  } catch (error) {
+    throw new ChatFlowError(error instanceof Error ? error.message : "Failed to load site assets.");
+  }
+}
+
+async function getSelectedAssetForSite(siteId: string, assetId?: string): Promise<ChatAssetOption | null> {
+  if (!assetId) {
+    return null;
+  }
+
+  try {
+    const asset = await getSiteAssetById(siteId, assetId);
+
+    if (!asset) {
+      throw new ChatSelectionError("The selected asset could not be found for this site.");
+    }
+
+    return toPublicAssetOption(asset);
+  } catch (error) {
+    if (error instanceof ChatFlowError) {
+      throw error;
+    }
+
+    throw new ChatFlowError(error instanceof Error ? error.message : "Failed to load the selected asset.");
+  }
+}
+
+function inferIntentCategoryFromSuggestion(
+  suggestion: SuggestionOption
+) {
+  if (suggestion.contentDraft?.kind === "news_post") {
+    return "content_create" as const;
+  }
+
+  if (suggestion.target.field === "imageAssetId") {
+    return "asset_update" as const;
+  }
+
+  if (
+    suggestion.target.field === "phone" ||
+    suggestion.target.field === "email" ||
+    suggestion.target.field === "businessHours"
+  ) {
+    return "factual_update" as const;
+  }
+
+  return "expression_update" as const;
+}
+
+function isPlainObject(value: Json | null | undefined): value is Record<string, Json | undefined> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function extractPendingNewsComposeState(messages: ChatMessageView[]) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const metadata = messages[index]?.metadata;
+
+    if (!isPlainObject(metadata) || !("pendingNewsDraft" in metadata)) {
+      continue;
+    }
+
+    const value = metadata.pendingNewsDraft;
+
+    if (value === null) {
+      return null;
+    }
+
+    const parsed = pendingNewsComposeStateSchema.safeParse(value);
+    return parsed.success ? parsed.data : null;
+  }
+
+  return null;
+}
+
+function buildAssistantMetadata(input: {
+  kind: string;
+  suggestionSetId?: string | null;
+  aiProvider?: string | null;
+  warning?: string | null;
+  pendingNewsDraft?: Json | null;
+  changeSetId?: string | null;
+}) {
+  const metadata: Record<string, Json | undefined> = {
+    kind: input.kind,
+    suggestionSetId: input.suggestionSetId ?? undefined,
+    aiProvider: input.aiProvider ?? undefined,
+    warning: input.warning ?? undefined,
+    changeSetId: input.changeSetId ?? undefined
+  };
+
+  if ("pendingNewsDraft" in input) {
+    metadata.pendingNewsDraft = input.pendingNewsDraft ?? null;
+  }
+
+  return metadata;
+}
+
+function buildNewsSuggestionFromDraft(
+  draft: NonNullable<ReturnType<typeof toSuggestedNewsPostDraft>>,
+  editableTargets: Awaited<ReturnType<typeof getEditableTargetsForSite>>,
+  availableAssets: ChatAssetOption[]
+): SuggestionOption {
+  const newsTarget =
+    editableTargets.find((target) => target.page === "news" && target.section === "news-intro") ??
+    editableTargets[0];
+  const matchedAsset = draft.imageAssetId
+    ? availableAssets.find((asset) => asset.id === draft.imageAssetId) ?? null
+    : null;
+
+  if (!newsTarget) {
+    throw new ChatFlowError("No editable target is available for news previews.");
+  }
+
+  return {
+    key: "option-1",
+    title: "この内容でお知らせを作成",
+    summary: "承認後にお知らせを公開します。",
+    proposedValue: `${draft.title}\n${draft.body}`,
+    reasoning: "不足情報が揃ったため、このまま承認前プレビューへ進めます。",
+    target: {
+      fieldId: newsTarget.fieldId,
+      fieldLabel: newsTarget.fieldLabel,
+      page: newsTarget.page,
+      section: newsTarget.section,
+      field: newsTarget.field
+    },
+    proposedAsset: matchedAsset
+      ? {
+          id: matchedAsset.id,
+          label: matchedAsset.originalFilename,
+          url: matchedAsset.publicUrl,
+          altText: matchedAsset.altText
+        }
+      : null,
+    contentDraft: draft
+  };
+}
+
+async function buildProposedSnapshotForSuggestion(
+  site: SiteDetails,
+  baseSnapshot: SiteSnapshot,
+  selectedSuggestion: SuggestionOption,
+  editableTargets: Awaited<ReturnType<typeof getEditableTargetsForSite>>
+) {
+  if (selectedSuggestion.contentDraft?.kind !== "news_post") {
+    const selectedAssetRow = selectedSuggestion.proposedAsset?.id
+      ? await getSiteAssetById(site.id, selectedSuggestion.proposedAsset.id)
+      : null;
+
+    return applySuggestionToSnapshot(baseSnapshot, selectedSuggestion, editableTargets, {
+      assetReference: selectedAssetRow ? assetRowToSnapshotReference(selectedAssetRow) : null
+    });
+  }
+
+  let nextSnapshot = baseSnapshot;
+
+  if (selectedSuggestion.contentDraft.imageAssetId) {
+    const asset = await getSiteAssetById(site.id, selectedSuggestion.contentDraft.imageAssetId);
+
+    if (!asset) {
+      throw new ChatSelectionError("The selected image for the news post does not belong to this site.");
+    }
+
+    nextSnapshot = upsertSnapshotAsset(nextSnapshot, asset);
+  }
+
+  return upsertNewsPostInSnapshot(
+    nextSnapshot,
+    buildNewsSnapshotItem({
+      id: selectedSuggestion.contentDraft.id ?? crypto.randomUUID(),
+      title: selectedSuggestion.contentDraft.title,
+      body: selectedSuggestion.contentDraft.body,
+      publishedAt: selectedSuggestion.contentDraft.publishedAt ?? new Date().toISOString(),
+      imageAssetId: selectedSuggestion.contentDraft.imageAssetId ?? null
+    })
+  );
 }
 
 async function touchChatSession(sessionId: string) {
@@ -295,6 +495,33 @@ async function loadPendingChangeSetView(sessionId: string): Promise<PendingChang
   }
 
   const payload = chatChangeSetPayloadSchema.parse(record.payload_json);
+  const { data: site, error: siteError } = await supabase
+    .from("sites")
+    .select("id,name,template_id,current_version_id")
+    .eq("id", record.site_id)
+    .single();
+
+  if (siteError) {
+    throw new ChatFlowError(siteError.message);
+  }
+
+  let currentSnapshot = normalizeSiteSnapshot(null, site);
+
+  if (site.current_version_id) {
+    const { data: currentVersion, error: currentVersionError } = await supabase
+      .from("site_versions")
+      .select("snapshot_json")
+      .eq("id", site.current_version_id)
+      .maybeSingle();
+
+    if (currentVersionError) {
+      throw new ChatFlowError(currentVersionError.message);
+    }
+
+    currentSnapshot = normalizeSiteSnapshot(currentVersion?.snapshot_json ?? null, site);
+  }
+
+  const proposedSnapshot = payload.proposedSnapshotJson as unknown as SiteSnapshot;
 
   return {
     id: record.id,
@@ -302,7 +529,8 @@ async function loadPendingChangeSetView(sessionId: string): Promise<PendingChang
     summary: record.summary,
     basedOnVersionId: payload.basedOnVersionId ?? null,
     previewDiff: payload.previewDiff ?? [],
-    proposedSnapshotJson: payload.proposedSnapshotJson as unknown as SiteSnapshot
+    preview: buildPendingChangePreview(currentSnapshot, proposedSnapshot),
+    proposedSnapshotJson: proposedSnapshot
   };
 }
 
@@ -337,6 +565,7 @@ async function loadChatWorkspaceStateForSession(sessionId: string): Promise<Chat
     return {
       session: null,
       messages: [],
+      pendingNewsDraft: null,
       activeSuggestionSet: null,
       pendingChangeSet: null
     };
@@ -347,6 +576,8 @@ async function loadChatWorkspaceStateForSession(sessionId: string): Promise<Chat
     loadSuggestionSetView(session.id),
     loadPendingChangeSetView(session.id)
   ]);
+  const pendingNewsDraft =
+    activeSuggestionSet || pendingChangeSet ? null : extractPendingNewsComposeState(messages);
 
   return {
     session: {
@@ -355,6 +586,7 @@ async function loadChatWorkspaceStateForSession(sessionId: string): Promise<Chat
       title: session.title
     },
     messages,
+    pendingNewsDraft,
     activeSuggestionSet,
     pendingChangeSet
   };
@@ -369,9 +601,11 @@ export async function getChatWorkspaceForAppUser(appUser: AppUser, siteId?: stri
       accessibleSites,
       selectedSiteId: null,
       site: null,
+      availableAssets: [],
       workspace: {
         session: null,
         messages: [],
+        pendingNewsDraft: null,
         activeSuggestionSet: null,
         pendingChangeSet: null
       }
@@ -379,12 +613,14 @@ export async function getChatWorkspaceForAppUser(appUser: AppUser, siteId?: stri
   }
 
   const site = await getSiteDetails(selectedSiteId, appUser);
+  const availableAssets = await getAvailableAssetsForSite(selectedSiteId);
   const session = await findLatestChatSession(selectedSiteId, appUser.id);
   const workspace = session
     ? await loadChatWorkspaceStateForSession(session.id)
     : {
         session: null,
         messages: [],
+        pendingNewsDraft: null,
         activeSuggestionSet: null,
         pendingChangeSet: null
       };
@@ -393,6 +629,7 @@ export async function getChatWorkspaceForAppUser(appUser: AppUser, siteId?: stri
     accessibleSites,
     selectedSiteId,
     site,
+    availableAssets,
     workspace
   };
 }
@@ -406,26 +643,121 @@ export async function interpretChatMessageForAppUser(appUser: AppUser, input: In
     initialTitle: truncateTitle(input.message)
   });
 
+  const previousMessages = await loadMessages(session.id);
+  const pendingNewsDraft = extractPendingNewsComposeState(previousMessages);
+  const selectedAsset = await getSelectedAssetForSite(site.id, input.assetId);
   const userMessage = await appendChatMessage({
     sessionId: session.id,
     role: "user",
     content: input.message,
     metadata: {
-      kind: "user_request"
+      kind: "user_request",
+      assetId: selectedAsset?.id ?? null
     }
   });
 
   const snapshot = await getCurrentSiteSnapshot(site);
   const editableTargets = await getEditableTargetsForSite(site, snapshot);
+  const availableAssets = await getAvailableAssetsForSite(site.id);
   const recentMessages = await loadMessages(session.id);
-  const aiResult = await generateChatInterpretation({
-    userMessage: input.message,
-    snapshot,
-    editableTargets,
-    recentMessages
-  });
+  let resolvedPendingNewsDraft = pendingNewsDraft;
+  let aiResult:
+    | Awaited<ReturnType<typeof generateChatInterpretation>>
+    | {
+        interpretation: ReturnType<typeof aiInterpretationSchema.parse>;
+        provider: "heuristic";
+        warning: string | null;
+      };
+
+  if (pendingNewsDraft && !isLikelyIntentSwitchFromNewsDraft(input.message)) {
+    const mergedState = mergePendingNewsComposeState({
+      state: pendingNewsDraft,
+      message: input.message,
+      selectedAsset
+    });
+    resolvedPendingNewsDraft = mergedState;
+    const completedDraft = toSuggestedNewsPostDraft(mergedState);
+
+    aiResult = completedDraft
+      ? {
+          interpretation: aiInterpretationSchema.parse({
+            flowAction: "suggest_options",
+            intent: {
+              action_type: "content_create",
+              intent_category: "content_create",
+              confidence: 0.95,
+              target_page: "news",
+              target_section: "news-intro",
+              target_field: "body",
+              needs_confirmation: true,
+              needs_more_input: false,
+              user_message: input.message,
+              assistant_message:
+                "不足情報が揃いました。お知らせ作成の候補として承認前プレビューへ進めます。"
+            },
+            followupQuestion: null,
+            rejectionReason: null,
+            suggestions: [buildNewsSuggestionFromDraft(completedDraft, editableTargets, availableAssets)]
+          }),
+          provider: "heuristic" as const,
+          warning: null
+        }
+      : {
+          interpretation: aiInterpretationSchema.parse({
+            flowAction: "ask_followup",
+            intent: {
+              action_type: "clarify_request",
+              intent_category: "content_create",
+              confidence: 0.9,
+              target_page: "news",
+              target_section: "news-intro",
+              target_field: "body",
+              needs_confirmation: false,
+              needs_more_input: true,
+              user_message: input.message,
+              assistant_message: "お知らせ作成の不足情報を更新しました。"
+            },
+            followupQuestion: buildPendingNewsFollowupQuestion(mergedState),
+            rejectionReason: null,
+            suggestions: []
+          }),
+          provider: "heuristic" as const,
+          warning: null
+        };
+  } else {
+    aiResult = await generateChatInterpretation({
+      userMessage: input.message,
+      snapshot,
+      editableTargets,
+      recentMessages,
+      selectedAsset,
+      availableAssets
+    });
+  }
+
   const interpretation = aiResult.interpretation;
   let suggestionSetId: string | null = null;
+
+  let nextPendingNewsDraft: Json | null | undefined = undefined;
+
+  if (pendingNewsDraft && isLikelyIntentSwitchFromNewsDraft(input.message)) {
+    nextPendingNewsDraft = null;
+    aiResult.warning =
+      aiResult.warning ??
+      "お知らせ作成の途中状態はいったん解除して、今回の入力は別の操作として扱いました。";
+  } else if (interpretation.intent.intent_category === "content_create") {
+    if (interpretation.flowAction === "ask_followup") {
+      const state =
+        resolvedPendingNewsDraft ??
+        createPendingNewsComposeStateFromMessage({
+          message: input.message,
+          selectedAsset
+        });
+      nextPendingNewsDraft = state as unknown as Json;
+    } else {
+      nextPendingNewsDraft = null;
+    }
+  }
 
   if (interpretation.flowAction === "suggest_options") {
     const supabase = createSupabaseAdminClient();
@@ -454,10 +786,13 @@ export async function interpretChatMessageForAppUser(appUser: AppUser, input: In
         ? interpretation.followupQuestion ?? interpretation.intent.assistant_message
         : interpretation.rejectionReason ?? interpretation.intent.assistant_message,
     metadata: {
-      kind: interpretation.flowAction,
-      suggestionSetId,
-      aiProvider: aiResult.provider,
-      warning: aiResult.warning
+      ...buildAssistantMetadata({
+        kind: interpretation.flowAction,
+        suggestionSetId,
+        aiProvider: aiResult.provider,
+        warning: aiResult.warning,
+        pendingNewsDraft: nextPendingNewsDraft
+      })
     }
   });
 
@@ -529,11 +864,19 @@ export async function selectSuggestionForAppUser(appUser: AppUser, input: Select
   const currentVersion = await store.getCurrentSiteVersion(site.id);
   const baseSnapshot = await getCurrentSiteSnapshot(site);
   const editableTargets = await getEditableTargetsForSite(site, baseSnapshot);
-  const proposedSnapshot = applySuggestionToSnapshot(baseSnapshot, selectedSuggestion, editableTargets);
+  const proposedSnapshot = await buildProposedSnapshotForSuggestion(
+    site,
+    baseSnapshot,
+    selectedSuggestion,
+    editableTargets
+  );
   const diff = createVersionDiff(
     baseSnapshot as unknown as Record<string, Json | undefined>,
     proposedSnapshot as unknown as Record<string, Json | undefined>
-  );
+  ).filter((entry) => {
+    const rootKey = entry.path[0];
+    return rootKey !== "assets" && rootKey !== "assetIds";
+  });
   const previewDiff = buildPreviewDiff(diff);
   const summary = `${selectedSuggestion.title}: ${selectedSuggestion.summary}`;
 
@@ -556,13 +899,14 @@ export async function selectSuggestionForAppUser(appUser: AppUser, input: Select
       chat_session_id: session.id,
       requested_by_user_id: appUser.id,
       status: "awaiting_confirmation",
-      intent_category: "expression_update",
+      intent_category: inferIntentCategoryFromSuggestion(selectedSuggestion),
       summary,
       payload_json: {
         basedOnVersionId: currentVersion?.id ?? null,
         proposedSnapshotJson: proposedSnapshot,
         selectedSuggestionKey: selectedSuggestion.key,
         suggestionSetId: suggestionSet.id,
+        pendingNewsPost: selectedSuggestion.contentDraft ?? undefined,
         previewDiff
       } as unknown as Json
     })
@@ -635,21 +979,7 @@ export async function confirmChangeSetForAppUser(appUser: AppUser, input: Confir
   }
 
   const now = new Date().toISOString();
-  const { data: approvedChangeSet, error: approveError } = await supabase
-    .from("change_sets")
-    .update({
-      status: "approved",
-      approved_by_user_id: appUser.id,
-      approved_at: now
-    })
-    .eq("id", changeSet.id)
-    .eq("status", "awaiting_confirmation")
-    .select("*")
-    .maybeSingle();
-
-  if (approveError) {
-    throw new ChatFlowError(approveError.message);
-  }
+  const approvedChangeSet = true;
 
   if (!approvedChangeSet) {
     throw new VersionConflictError(
@@ -670,28 +1000,52 @@ export async function confirmChangeSetForAppUser(appUser: AppUser, input: Confir
   }
 
   const store = new SupabaseVersioningStore(supabase);
+  const payload = chatChangeSetPayloadSchema.parse(changeSet.payload_json);
+  const pendingNewsPost =
+    payload.pendingNewsPost?.kind === "news_post" ? payload.pendingNewsPost : null;
+
+  if (pendingNewsPost?.imageAssetId) {
+    const asset = await getSiteAssetById(changeSet.site_id, pendingNewsPost.imageAssetId);
+
+    if (!asset) {
+      throw new ChatSelectionError("The image selected for the news post is not available for this site.");
+    }
+  }
+
   const result = await publishChangeSet(store, {
     changeSetId: changeSet.id,
     actorUserId: appUser.id,
-    now: () => new Date().toISOString()
-  });
-
-  const { error: auditError } = await supabase.from("audit_logs").insert({
-    client_id: changeSet.client_id,
-    site_id: changeSet.site_id,
-    actor_user_id: appUser.id,
-    action: "publish",
-    target_type: "site_version",
-    target_id: result.version.id,
-    metadata: {
-      changeSetId: changeSet.id,
-      publishedVersionId: result.version.id
+    now: () => new Date().toISOString(),
+    expectedChangeSetStatus: "awaiting_confirmation",
+    changeSetPatch: {
+      approved_by_user_id: appUser.id,
+      approved_at: now
+    },
+    newsPost: pendingNewsPost
+      ? {
+          id: pendingNewsPost.id,
+          client_id: changeSet.client_id,
+          site_id: changeSet.site_id,
+          title: pendingNewsPost.title,
+          body: pendingNewsPost.body,
+          image_asset_id: pendingNewsPost.imageAssetId ?? null,
+          status: "published",
+          published_at: pendingNewsPost.publishedAt ?? now,
+          created_by_user_id: appUser.id
+        }
+      : null,
+    auditLog: {
+      client_id: changeSet.client_id,
+      site_id: changeSet.site_id,
+      actor_user_id: appUser.id,
+      action: "publish",
+      target_type: "site_version",
+      target_id: null,
+      metadata: {
+        changeSetId: changeSet.id
+      }
     }
   });
-
-  if (auditError) {
-    throw new ChatFlowError(auditError.message);
-  }
 
   if (changeSet.chat_session_id) {
     await appendChatMessage({
@@ -711,6 +1065,7 @@ export async function confirmChangeSetForAppUser(appUser: AppUser, input: Confir
     : {
         session: null,
         messages: [],
+        pendingNewsDraft: null,
         activeSuggestionSet: null,
         pendingChangeSet: null
       };

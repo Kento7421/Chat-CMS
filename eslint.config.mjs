@@ -11,7 +11,7 @@ const config = [
   ...compat.config(nextVitals),
   ...compat.config(nextTypescript),
   {
-    ignores: [".next/**", "node_modules/**", "coverage/**", "dist/**"]
+    ignores: [".next/**", "node_modules/**", "coverage/**", "dist/**", "next-env.d.ts"]
   }
 ];
 

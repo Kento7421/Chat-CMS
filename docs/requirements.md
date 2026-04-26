@@ -306,7 +306,7 @@ WebやAIに詳しくない中小企業・小規模事業者でも、自然文の
 
 ### AI
 
-- OpenAI API
+- Claude / Anthropic API
 
 ### ホスティング
 
@@ -464,7 +464,7 @@ AIの内部出力は必ずJSON形式にする。
 
 - フロントエンドとバックエンドは Next.js で単一リポジトリ構成にする
 - DB / Auth / Storage は Supabase を使う
-- AI連携は OpenAI API を使う
+- AI連携は Claude / Anthropic API を使う
 - デザインシステムは最小限に抑え、機能優先で進める
 - テンプレートは1種類から始める
 - 公開反映は承認後のみ行う

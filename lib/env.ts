@@ -4,15 +4,22 @@ const publicEnvSchema = z.object({
   NEXT_PUBLIC_APP_NAME: z.string().min(1).default("Chat CMS"),
   NEXT_PUBLIC_APP_URL: z.string().url(),
   NEXT_PUBLIC_SUPABASE_URL: z.string().url(),
-  NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().min(1)
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().min(1),
+  NEXT_PUBLIC_SUPABASE_ASSETS_BUCKET: z.string().min(1).default("site-assets")
 });
 
 const serverEnvSchema = z.object({
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
   SUPABASE_ASSETS_BUCKET: z.string().min(1).default("site-assets"),
-  OPENAI_API_KEY: z.string().min(1).optional(),
-  OPENAI_MODEL: z.string().min(1).default("gpt-4o-mini"),
-  SITE_PREVIEW_ORIGIN: z.string().url().optional()
+  ANTHROPIC_API_KEY: z.string().min(1).optional(),
+  ANTHROPIC_MODEL: z.string().min(1).optional(),
+  CLAUDE_API_KEY: z.string().min(1).optional(),
+  CLAUDE_MODEL: z.string().min(1).optional(),
+  SITE_PREVIEW_ORIGIN: z.string().url().optional(),
+  GA4_CLIENT_EMAIL: z.string().email().optional(),
+  GA4_PRIVATE_KEY: z.string().min(1).optional(),
+  GA4_TOKEN_URI: z.string().url().default("https://oauth2.googleapis.com/token"),
+  GA4_API_BASE_URL: z.string().url().default("https://analyticsdata.googleapis.com/v1beta")
 });
 
 type PublicEnv = z.infer<typeof publicEnvSchema>;
@@ -57,7 +64,13 @@ export function getServerEnv() {
     );
   }
 
-  cachedServerEnv = result.data;
+  cachedServerEnv = {
+    ...result.data,
+    ANTHROPIC_MODEL:
+      result.data.ANTHROPIC_MODEL ??
+      result.data.CLAUDE_MODEL ??
+      "claude-sonnet-4-20250514"
+  };
   return cachedServerEnv;
 }
 

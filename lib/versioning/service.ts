@@ -3,6 +3,9 @@ import { publishableChangeSetPayloadSchema } from "@/lib/versioning/schemas";
 import type { Json } from "@/types/database";
 import type { VersioningStore } from "@/lib/versioning/store";
 import type {
+  ChangeSetRow,
+  NewAuditLogInput,
+  NewNewsPostInput,
   PublishChangeSetResult,
   RollbackToVersionResult,
   SnapshotJson,
@@ -24,6 +27,10 @@ type PublishChangeSetInput = {
   changeSetId: string;
   actorUserId?: string | null;
   now?: () => string;
+  expectedChangeSetStatus?: ChangeSetRow["status"];
+  changeSetPatch?: Partial<ChangeSetRow>;
+  newsPost?: NewNewsPostInput | null;
+  auditLog?: NewAuditLogInput | null;
 };
 
 type RollbackToVersionInput = {
@@ -31,6 +38,7 @@ type RollbackToVersionInput = {
   targetVersionId: string;
   actorUserId?: string | null;
   summary?: string;
+  auditLog?: NewAuditLogInput | null;
 };
 
 type PublishSnapshotVersionInput = {
@@ -39,6 +47,8 @@ type PublishSnapshotVersionInput = {
   snapshot: Json;
   summary: string | null;
   actorUserId?: string | null;
+  newsPost?: NewNewsPostInput | null;
+  auditLog?: NewAuditLogInput | null;
 };
 
 function ensureValidCurrentVersionNumber(currentVersionNumber: number | null | undefined) {
@@ -66,6 +76,18 @@ function coerceSnapshotJson(value: Json): SnapshotJson {
   }
 
   return value as SnapshotJson;
+}
+
+function toVersionChangeInputs(diff: VersionDiffEntry[]) {
+  return diff.map((entry) => ({
+    page_key: entry.pageKey,
+    section_key: entry.sectionKey,
+    field_key: entry.fieldKey,
+    change_type: entry.changeType,
+    before_value: entry.beforeValue,
+    after_value: entry.afterValue,
+    summary: entry.summary
+  }));
 }
 
 export function createNextVersionNumber(currentVersionNumber: number | null | undefined) {
@@ -149,29 +171,37 @@ export async function publishChangeSet(
     (currentVersion?.snapshot_json as typeof payload.proposedSnapshotJson | undefined) ?? null,
     payload.proposedSnapshotJson
   );
-
-  const version = await store.insertSiteVersion({
-    client_id: changeSet.client_id,
-    site_id: changeSet.site_id,
-    version_number: nextVersionNumber,
-    parent_version_id: currentVersion?.id ?? payload.basedOnVersionId ?? null,
-    rollback_from_version_id: null,
-    snapshot_json: payload.proposedSnapshotJson,
-    summary: changeSet.summary,
-    created_by_user_id:
-      input.actorUserId ?? changeSet.approved_by_user_id ?? changeSet.requested_by_user_id,
-    source_change_set_id: changeSet.id
-  });
-
-  await saveVersionChanges(store, version.id, diff);
-  await updateSiteCurrentVersion(store, changeSet.site_id, version.id);
-  await store.updateChangeSet(changeSet.id, {
-    status: "applied",
-    applied_at: now()
+  const committed = await store.commitVersionPublication({
+    siteId: changeSet.site_id,
+    expectedCurrentVersionId: currentVersion?.id ?? null,
+    version: {
+      client_id: changeSet.client_id,
+      site_id: changeSet.site_id,
+      version_number: nextVersionNumber,
+      parent_version_id: currentVersion?.id ?? payload.basedOnVersionId ?? null,
+      rollback_from_version_id: null,
+      snapshot_json: payload.proposedSnapshotJson,
+      summary: changeSet.summary,
+      created_by_user_id:
+        input.actorUserId ?? changeSet.approved_by_user_id ?? changeSet.requested_by_user_id,
+      source_change_set_id: changeSet.id
+    },
+    versionChanges: toVersionChangeInputs(diff),
+    changeSetTransition: {
+      id: changeSet.id,
+      expectedStatus: input.expectedChangeSetStatus ?? changeSet.status,
+      patch: {
+        ...input.changeSetPatch,
+        status: "applied",
+        applied_at: now()
+      }
+    },
+    newsPost: input.newsPost ?? null,
+    auditLog: input.auditLog ?? null
   });
 
   return {
-    version,
+    version: committed.version,
     diff
   };
 }
@@ -198,24 +228,26 @@ export async function rollbackToVersion(
     coerceSnapshotJson(currentVersion.snapshot_json),
     coerceSnapshotJson(targetVersion.snapshot_json)
   );
-
-  const version = await store.insertSiteVersion({
-    client_id: currentVersion.client_id,
-    site_id: currentVersion.site_id,
-    version_number: nextVersionNumber,
-    parent_version_id: currentVersion.id,
-    rollback_from_version_id: targetVersion.id,
-    snapshot_json: targetVersion.snapshot_json,
-    summary: input.summary ?? `Version ${targetVersion.version_number} へロールバック`,
-    created_by_user_id: input.actorUserId ?? null,
-    source_change_set_id: null
+  const committed = await store.commitVersionPublication({
+    siteId: input.siteId,
+    expectedCurrentVersionId: currentVersion.id,
+    version: {
+      client_id: currentVersion.client_id,
+      site_id: currentVersion.site_id,
+      version_number: nextVersionNumber,
+      parent_version_id: currentVersion.id,
+      rollback_from_version_id: targetVersion.id,
+      snapshot_json: targetVersion.snapshot_json,
+      summary: input.summary ?? `Version ${targetVersion.version_number} にロールバック`,
+      created_by_user_id: input.actorUserId ?? null,
+      source_change_set_id: null
+    },
+    versionChanges: toVersionChangeInputs(diff),
+    auditLog: input.auditLog ?? null
   });
 
-  await saveVersionChanges(store, version.id, diff);
-  await updateSiteCurrentVersion(store, input.siteId, version.id);
-
   return {
-    version,
+    version: committed.version,
     diff,
     rolledBackToVersion: targetVersion,
     previousCurrentVersion: currentVersion
@@ -232,24 +264,27 @@ export async function publishSnapshotVersion(
     currentVersion ? coerceSnapshotJson(currentVersion.snapshot_json) : null,
     coerceSnapshotJson(input.snapshot)
   );
-
-  const version = await store.insertSiteVersion({
-    client_id: input.clientId,
-    site_id: input.siteId,
-    version_number: nextVersionNumber,
-    parent_version_id: currentVersion?.id ?? null,
-    rollback_from_version_id: null,
-    snapshot_json: input.snapshot,
-    summary: input.summary,
-    created_by_user_id: input.actorUserId ?? null,
-    source_change_set_id: null
+  const committed = await store.commitVersionPublication({
+    siteId: input.siteId,
+    expectedCurrentVersionId: currentVersion?.id ?? null,
+    version: {
+      client_id: input.clientId,
+      site_id: input.siteId,
+      version_number: nextVersionNumber,
+      parent_version_id: currentVersion?.id ?? null,
+      rollback_from_version_id: null,
+      snapshot_json: input.snapshot,
+      summary: input.summary,
+      created_by_user_id: input.actorUserId ?? null,
+      source_change_set_id: null
+    },
+    versionChanges: toVersionChangeInputs(diff),
+    newsPost: input.newsPost ?? null,
+    auditLog: input.auditLog ?? null
   });
 
-  await saveVersionChanges(store, version.id, diff);
-  await updateSiteCurrentVersion(store, input.siteId, version.id);
-
   return {
-    version,
+    version: committed.version,
     diff
   };
 }

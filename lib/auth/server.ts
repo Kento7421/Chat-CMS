@@ -15,6 +15,10 @@ export async function getCurrentAppUser(): Promise<AppUser | null> {
   } = await supabase.auth.getUser();
 
   if (error) {
+    if (error.message === "Auth session missing!") {
+      return null;
+    }
+
     throw new Error(error.message);
   }
 
@@ -104,8 +108,8 @@ export async function requireApiAppUser() {
 }
 
 export async function listAccessibleSitesForAppUser(appUser: AppUser): Promise<AccessibleSite[]> {
-  const admin = createSupabaseAdminClient();
-  let query = admin
+  const supabase = await createSupabaseServerClient();
+  let query = supabase
     .from("sites")
     .select("id,client_id,name,slug,current_version_id")
     .order("created_at", { ascending: true });
@@ -120,12 +124,12 @@ export async function listAccessibleSitesForAppUser(appUser: AppUser): Promise<A
     throw new Error(error.message);
   }
 
-  return data;
+  return (data ?? []) as AccessibleSite[];
 }
 
 export async function assertAppUserCanAccessSite(appUser: AppUser, siteId: string) {
-  const admin = createSupabaseAdminClient();
-  const { data: site, error } = await admin
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase
     .from("sites")
     .select("id,client_id,name,slug,current_version_id")
     .eq("id", siteId)
@@ -135,8 +139,10 @@ export async function assertAppUserCanAccessSite(appUser: AppUser, siteId: strin
     throw new Error(error.message);
   }
 
+  const site = data as AccessibleSite | null;
+
   if (!site) {
-    throw new AuthorizationError("対象サイトが見つかりません。");
+    throw new AuthorizationError("対象サイトが見つからないか、アクセスできません。");
   }
 
   if (appUser.role !== "operator_admin" && site.client_id !== appUser.clientId) {

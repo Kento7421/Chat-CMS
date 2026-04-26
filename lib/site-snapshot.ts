@@ -1,5 +1,10 @@
 import type { Database, Json } from "@/types/database";
-import type { AssetReference, NewsSnapshotItem, SiteSnapshot } from "@/types/domain";
+import type {
+  AssetReference,
+  NewsSnapshotItem,
+  SitePageSnapshot,
+  SiteSnapshot
+} from "@/types/domain";
 
 type SiteRow = Database["public"]["Tables"]["sites"]["Row"];
 type AssetRow = Database["public"]["Tables"]["assets"]["Row"];
@@ -9,6 +14,63 @@ const DEFAULT_TEMPLATE_VERSION = "simple-corporate-v1";
 
 function isPlainObject(value: Json | null | undefined): value is Record<string, Json | undefined> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function createDefaultPages(siteName: string): SitePageSnapshot[] {
+  return [
+    {
+      key: "home",
+      title: "Home",
+      sections: [
+        {
+          id: "hero",
+          heading: siteName,
+          body: "Welcome to your public site.",
+          imageAssetId: null,
+          imageAlt: null
+        }
+      ]
+    },
+    {
+      key: "about",
+      title: "About",
+      sections: [
+        {
+          id: "company-overview",
+          heading: "About Us",
+          body: "Add your company profile here.",
+          imageAssetId: null,
+          imageAlt: null
+        }
+      ]
+    },
+    {
+      key: "contact",
+      title: "Contact",
+      sections: [
+        {
+          id: "contact-info",
+          heading: "Contact",
+          body: "Add contact details so visitors can reach you.",
+          imageAssetId: null,
+          imageAlt: null
+        }
+      ]
+    },
+    {
+      key: "news",
+      title: "News",
+      sections: [
+        {
+          id: "news-intro",
+          heading: "News",
+          body: "Share the latest updates from your company.",
+          imageAssetId: null,
+          imageAlt: null
+        }
+      ]
+    }
+  ];
 }
 
 export function createDefaultSiteSnapshot(site: Pick<SiteRow, "id" | "name" | "template_id">): SiteSnapshot {
@@ -34,52 +96,7 @@ export function createDefaultSiteSnapshot(site: Pick<SiteRow, "id" | "name" | "t
       email: "",
       businessHours: ""
     },
-    pages: [
-      {
-        key: "home",
-        title: "トップページ",
-        sections: [
-          {
-            id: "hero",
-            heading: site.name,
-            body: "このサイトは Chat CMS から更新できます。"
-          }
-        ]
-      },
-      {
-        key: "about",
-        title: "会社概要",
-        sections: [
-          {
-            id: "company-overview",
-            heading: "会社概要",
-            body: "会社情報は後から更新できます。"
-          }
-        ]
-      },
-      {
-        key: "contact",
-        title: "お問い合わせ",
-        sections: [
-          {
-            id: "contact-info",
-            heading: "お問い合わせ",
-            body: "電話番号やメールアドレスを登録すると、ここに反映されます。"
-          }
-        ]
-      },
-      {
-        key: "news",
-        title: "お知らせ",
-        sections: [
-          {
-            id: "news-intro",
-            heading: "お知らせ",
-            body: "最新のお知らせを掲載します。"
-          }
-        ]
-      }
-    ],
+    pages: createDefaultPages(site.name),
     news: [],
     assets: [],
     assetIds: []
@@ -111,7 +128,7 @@ export function normalizeSiteSnapshot(
       ? (snapshotJson.navigation as SiteSnapshot["navigation"])
       : fallback.navigation,
     pages: Array.isArray(snapshotJson.pages)
-      ? (snapshotJson.pages as SiteSnapshot["pages"])
+      ? (snapshotJson.pages as unknown as SiteSnapshot["pages"])
       : fallback.pages,
     news: Array.isArray(snapshotJson.news)
       ? (snapshotJson.news as unknown as SiteSnapshot["news"])
@@ -137,12 +154,13 @@ export function assetRowToSnapshotReference(asset: AssetRow): AssetReference {
   };
 }
 
-export function upsertSnapshotAsset(snapshot: SiteSnapshot, asset: AssetRow): SiteSnapshot {
-  const assetReference = assetRowToSnapshotReference(asset);
-  const assets = snapshot.assets.filter((item) => item.id !== asset.id);
-  const assetIds = snapshot.assetIds.includes(asset.id)
+export function upsertSnapshotAsset(snapshot: SiteSnapshot, asset: AssetRow | AssetReference): SiteSnapshot {
+  const assetReference =
+    "storage_path" in asset ? assetRowToSnapshotReference(asset as AssetRow) : (asset as AssetReference);
+  const assets = snapshot.assets.filter((item) => item.id !== assetReference.id);
+  const assetIds = snapshot.assetIds.includes(assetReference.id)
     ? snapshot.assetIds
-    : [...snapshot.assetIds, asset.id];
+    : [...snapshot.assetIds, assetReference.id];
 
   return {
     ...snapshot,

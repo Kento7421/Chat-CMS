@@ -51,7 +51,9 @@ const supportedFieldMap: Record<string, SupportedTargetField> = {
   phone: "phone",
   email: "email",
   businessHours: "businessHours",
-  business_hours: "businessHours"
+  business_hours: "businessHours",
+  imageAssetId: "imageAssetId",
+  image_asset_id: "imageAssetId"
 };
 
 function createFieldDefinition(input: {
@@ -80,10 +82,7 @@ export function getFallbackEditableFieldDefinitions(
 ): SupportedEditableFieldDefinition[] {
   const normalizedCode = `${templateCode}:${templateVersion}`.toLowerCase();
 
-  if (
-    !normalizedCode.includes("simple-corporate") &&
-    !normalizedCode.includes("corporate")
-  ) {
+  if (!normalizedCode.includes("simple-corporate") && !normalizedCode.includes("corporate")) {
     return [];
   }
 
@@ -98,7 +97,7 @@ export function getFallbackEditableFieldDefinitions(
       fieldLabel: "見出し",
       label: "トップページ / メインビジュアル / 見出し",
       type: "short_text",
-      aliases: ["トップ", "ホーム", "メイン", "キャッチコピー", "ヒーロー"],
+      aliases: ["トップ", "ヒーロー", "キャッチコピー", "タイトル"],
       path: ["pages", "home", "sections", "hero", "heading"]
     }),
     createFieldDefinition({
@@ -111,8 +110,21 @@ export function getFallbackEditableFieldDefinitions(
       fieldLabel: "本文",
       label: "トップページ / メインビジュアル / 本文",
       type: "rich_text",
-      aliases: ["トップ", "ホーム", "説明文", "紹介文", "リード文"],
+      aliases: ["トップ", "ヒーロー", "リード文", "説明文"],
       path: ["pages", "home", "sections", "hero", "body"]
+    }),
+    createFieldDefinition({
+      id: "home.hero.imageAssetId",
+      page: "home",
+      pageLabel: "トップページ",
+      section: "hero",
+      sectionLabel: "メインビジュアル",
+      field: "imageAssetId",
+      fieldLabel: "画像",
+      label: "トップページ / メインビジュアル / 画像",
+      type: "image",
+      aliases: ["トップ画像", "メイン画像", "メインビジュアル画像", "ヒーロー画像", "写真"],
+      path: ["pages", "home", "sections", "hero", "imageAssetId"]
     }),
     createFieldDefinition({
       id: "about.company-overview.heading",
@@ -124,7 +136,7 @@ export function getFallbackEditableFieldDefinitions(
       fieldLabel: "見出し",
       label: "会社概要 / 会社紹介 / 見出し",
       type: "short_text",
-      aliases: ["会社紹介", "会社概要ページ"],
+      aliases: ["会社概要見出し", "紹介見出し"],
       path: ["pages", "about", "sections", "company-overview", "heading"]
     }),
     createFieldDefinition({
@@ -137,20 +149,33 @@ export function getFallbackEditableFieldDefinitions(
       fieldLabel: "本文",
       label: "会社概要 / 会社紹介 / 本文",
       type: "rich_text",
-      aliases: ["会社紹介", "会社概要ページ", "紹介文"],
+      aliases: ["会社紹介文", "会社概要本文"],
       path: ["pages", "about", "sections", "company-overview", "body"]
+    }),
+    createFieldDefinition({
+      id: "about.company-overview.imageAssetId",
+      page: "about",
+      pageLabel: "会社概要",
+      section: "company-overview",
+      sectionLabel: "会社紹介",
+      field: "imageAssetId",
+      fieldLabel: "画像",
+      label: "会社概要 / 会社紹介 / 画像",
+      type: "image",
+      aliases: ["会社概要画像", "紹介画像", "about画像", "写真"],
+      path: ["pages", "about", "sections", "company-overview", "imageAssetId"]
     }),
     createFieldDefinition({
       id: "contact.contact-info.body",
       page: "contact",
       pageLabel: "お問い合わせ",
       section: "contact-info",
-      sectionLabel: "連絡先案内",
+      sectionLabel: "連絡先情報",
       field: "body",
       fieldLabel: "本文",
-      label: "お問い合わせ / 連絡先案内 / 本文",
+      label: "お問い合わせ / 連絡先情報 / 本文",
       type: "rich_text",
-      aliases: ["問い合わせ", "お問い合わせページ", "連絡先"],
+      aliases: ["お問い合わせ本文", "連絡先説明"],
       path: ["pages", "contact", "sections", "contact-info", "body"]
     }),
     createFieldDefinition({
@@ -158,12 +183,12 @@ export function getFallbackEditableFieldDefinitions(
       page: "contact",
       pageLabel: "お問い合わせ",
       section: "contact-info",
-      sectionLabel: "連絡先案内",
+      sectionLabel: "連絡先情報",
       field: "phone",
       fieldLabel: "電話番号",
       label: "お問い合わせ / 電話番号",
       type: "phone",
-      aliases: ["問い合わせ", "TEL", "電話"],
+      aliases: ["電話", "TEL", "連絡先"],
       path: ["contact", "phone"]
     }),
     createFieldDefinition({
@@ -171,12 +196,12 @@ export function getFallbackEditableFieldDefinitions(
       page: "contact",
       pageLabel: "お問い合わせ",
       section: "contact-info",
-      sectionLabel: "連絡先案内",
+      sectionLabel: "連絡先情報",
       field: "email",
       fieldLabel: "メールアドレス",
       label: "お問い合わせ / メールアドレス",
       type: "email",
-      aliases: ["メール", "E-mail", "連絡先メール"],
+      aliases: ["メール", "email", "e-mail"],
       path: ["contact", "email"]
     }),
     createFieldDefinition({
@@ -184,7 +209,7 @@ export function getFallbackEditableFieldDefinitions(
       page: "contact",
       pageLabel: "お問い合わせ",
       section: "contact-info",
-      sectionLabel: "連絡先案内",
+      sectionLabel: "連絡先情報",
       field: "businessHours",
       fieldLabel: "営業時間",
       label: "お問い合わせ / 営業時間",
@@ -197,12 +222,12 @@ export function getFallbackEditableFieldDefinitions(
       page: "news",
       pageLabel: "お知らせ",
       section: "news-intro",
-      sectionLabel: "お知らせ案内",
+      sectionLabel: "導入",
       field: "heading",
       fieldLabel: "見出し",
-      label: "お知らせ / お知らせ案内 / 見出し",
+      label: "お知らせ / 導入 / 見出し",
       type: "short_text",
-      aliases: ["ニュース", "お知らせページ"],
+      aliases: ["ニュース見出し", "お知らせ見出し"],
       path: ["pages", "news", "sections", "news-intro", "heading"]
     }),
     createFieldDefinition({
@@ -210,12 +235,12 @@ export function getFallbackEditableFieldDefinitions(
       page: "news",
       pageLabel: "お知らせ",
       section: "news-intro",
-      sectionLabel: "お知らせ案内",
+      sectionLabel: "導入",
       field: "body",
       fieldLabel: "本文",
-      label: "お知らせ / お知らせ案内 / 本文",
+      label: "お知らせ / 導入 / 本文",
       type: "rich_text",
-      aliases: ["ニュース", "お知らせページ", "説明文"],
+      aliases: ["ニュース本文", "お知らせ本文"],
       path: ["pages", "news", "sections", "news-intro", "body"]
     })
   ];
